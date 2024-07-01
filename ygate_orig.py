@@ -1,4 +1,4 @@
-#!/usr/bin/python  -u
+#!/usr/bin/python  -u 
 #
 #
 #  ygate - Yaesu igate                       General Public License v2
@@ -25,10 +25,7 @@ import threading
 import signal
 import os
 import socket
-import Adafruit_DHT as dht
-import psutil
 from enum import Enum
-from gpiozero import CPUTemperature
 
 # User specific constants (please fill these out accordingly)
 USER = "VE3YSH-9"
@@ -38,14 +35,6 @@ LONG = "07559.15W"
 #SERIAL_PORT = 'COM9' # Windows
 SERIAL_PORT = '/dev/ttyUSB0' # Linux
 
-# DHT22 specific constants
-DHT = 4 # DHT22 data pin
-
-# Telemetry constants and variables
-SEQUENCE_NUMBER = 10
-PARAMETER_NAMES = ":VE3YSH-9 :PARM.CPU,Load,Temp,RH"
-UNIT_MESSAGE = ":VE3YSH-9 :UNIT.degC,%,degC,%"
-EQUATION_COEF = ":VE3YSH-9 :EQNS.0,0.5,0,0,1,0,0,0.5,-50,0,0.5,0"
 # APRS-IS specific constants
 HOST = "noam.aprs2.net"  # north america tier2 servers round robin
 PORT = 14580
@@ -57,33 +46,15 @@ BUFFER_SIZE = 512
 POSITION = LAT + OVERLAY + LONG
 TO_CALL = ">APZYG2"  # Software version used as TOCALL
 MESSAGE = "Yaesu ygate https://github.com/craigerl/ygate"
-PREFIX = USER + TO_CALL + ",TCPIP*:"
-MY_POSITION_STRING = USER + TO_CALL + ",TCPIP*:!" + POSITION + ICON + MESSAGE
-MY_SYSTEM_DATA_STRING = ""
+MY_POSITION_STRING = USER + TO_CALL + ",TCPIP*:!" + POSITION + ICON + MESSAGE + "\r\n"
 MY_LOGIN_STRING = "user " + USER + " pass " +  PASS + " vers ygate.py 2.00\n"
 BEACON_INTERVAL_S = 1800
-TELEMETRY_INTERVAL_S = 300
-SERIAL_TIMEOUT_S = 10
-
-# Object position string constants
-OBJ1_STRING = "VE3RLR-V" + TO_CALL + ",TCPIP*:!" + "4454.12N" + "D" + "07601.70W" + ICON + "147.210MHz T151 +060 C4FM AMS http://ve3rlr.ca/"
 
 # State Machine definitions
 class AprsIsState(Enum):
   NOCONNECT = 1
   CONNECTED = 2
   LOGGED_IN = 3
-
-# DHT22 handler
-def readDht22():
-  h,t = dht.read_retry(dht.DHT22, DHT)
-  print("DHT22 data " + f"{t:.1f}" + " degC, " + f"{h:.0f}" + "%")
-  return f"{int(round((t+50)*2)):03d}," + f"{int(round(h*2)):03d}"
-
-# CPU load
-def getCPULoad():
-  load = psutil.getloadavg()[0] / psutil.cpu_count() * 100
-  return f"{int(round(load,0))}"
 
 # Ctrl-c handler
 def signal_handler(signal, frame):
@@ -141,7 +112,7 @@ signal.signal(signal.SIGINT, signal_handler)
 
 # Open the specified serial port
 try:
-  ser = serial.Serial(SERIAL_PORT, 9600, timeout=SERIAL_TIMEOUT_S)
+  ser = serial.Serial(SERIAL_PORT, 9600)
 except Exception as e:
   print(">>> FAILED to open " + SERIAL_PORT + "\n")
   print(e)
@@ -163,9 +134,8 @@ run_state = AprsIsState.NOCONNECT
 #    AA6I>APOTU0,K6IXA-3,VACA,WIDE2*,qAO,KM6XXX-1:/022047z3632.30N/11935.16Wk136/055/A=000300ENROUTE
 #
 
-# Force sending my position and telemetry first time around
+# Force sending my position first time around
 last_beacon_time = time.time() - BEACON_INTERVAL_S
-last_telemetry_time = last_beacon_time - TELEMETRY_INTERVAL_S
 
 while True:
 
@@ -197,42 +167,6 @@ while True:
 
     case AprsIsState.LOGGED_IN:
       line = ser.readline()
-
-      # Check to see if its time to beacon
-
-      current_time = time.time()
-
-      if (current_time - last_telemetry_time > TELEMETRY_INTERVAL_S):
-        cpu = CPUTemperature()
-        load = getCPULoad()
-        print("CPU Temp: " + str(round(cpu.temperature, 1)) + "CPU Load: " + load + "%")
-        thStr = readDht22()
-        telem = "T#" + f"{SEQUENCE_NUMBER:03d}," + f"{int(round(cpu.temperature*2)):03d}," + getCPULoad() + "," + thStr 
-        send_to_server(PREFIX + telem + "\r\n")
-        SEQUENCE_NUMBER = (SEQUENCE_NUMBER + 1) % 1000
-        print(PREFIX + telem)
-        last_telemetry_time = current_time
-
-      if (current_time - last_beacon_time > BEACON_INTERVAL_S):
-        if (send_to_server(MY_POSITION_STRING + "\r\n") == False):
-          reset_socket()
-          time.sleep(5)
-          run_state = AprsIsState.NOCONNECT
-        else:
-          print(MY_POSITION_STRING)
-          last_beacon_time = current_time
-          send_to_server(PREFIX + PARAMETER_NAMES + "\r\n")
-          print(PREFIX + PARAMETER_NAMES) 
-          send_to_server(PREFIX + UNIT_MESSAGE + "\r\n")
-          print(PREFIX + UNIT_MESSAGE)
-          send_to_server(PREFIX + EQUATION_COEF + "\r\n")
-          print(PREFIX + EQUATION_COEF)
-          #send_to_server(OBJ1_STRING + "\r\n")
-          #print(OBJ1_STRING)
-
-      if not line:
-        continue
-
       line = line.decode('utf-8', errors='ignore')
       line = line.strip('\n\r')
       if (re.search('\[.*\] <UI.*>:', str(line))):     # Yaesu's nmea9-formatted suffix means we found a routing block
@@ -270,14 +204,12 @@ while True:
         # Check to see if its time to beacon
         current_time = time.time()
         if (current_time - last_beacon_time > BEACON_INTERVAL_S):
-          cpu = CPUTemperature()
-          MY_SYSTEM_DATA_STRING = " CPUTemp:" + str(round(cpu.temperature, 1)) + "C"
-          if (send_to_server(MY_POSITION_STRING + MY_SYSTEM_DATA_STRING + "\r\n") == False):
+          if (send_to_server(MY_POSITION_STRING) == False):
             reset_socket()
             time.sleep(5)
             run_state = AprsIsState.NOCONNECT
           else:
-            print(MY_POSITION_STRING + MY_SYSTEM_DATA_STRING)
+            print(MY_POSITION_STRING.strip())
             last_beacon_time = current_time
 
 # We never get here, but these things happen in the ctrl-c handler
